@@ -378,13 +378,20 @@ jobs:
       - name: Commit changes
         if: steps.check-changes.outputs.has_changes == 'true' && env.skip_port == 'false'
         run: |
-          # IMPORTANT: Exclude .github/workflows/ to avoid permission issues
-          git add . ':!.github/workflows'
+          # IMPORTANT: Exclude workflow files and temporary files
+          git add . ':!.github/workflows' ':!pr-body.md' ':!commits.txt'
 
           # Verify no workflow files are staged
           if git diff --cached --name-only | grep -q "^.github/workflows/"; then
             echo "❌ ERROR: Workflow files detected in staged changes"
             git diff --cached --name-only | grep "^.github/workflows/"
+            exit 1
+          fi
+
+          # Verify no temporary files are staged
+          if git diff --cached --name-only | grep -qE "(pr-body\.md|commits\.txt)"; then
+            echo "❌ ERROR: Temporary files detected in staged changes"
+            git diff --cached --name-only | grep -E "(pr-body\.md|commits\.txt)"
             exit 1
           fi
 
