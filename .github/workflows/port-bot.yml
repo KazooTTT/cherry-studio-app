@@ -129,362 +129,99 @@ jobs:
 
           echo "✅ Generated patch file with transformed paths"
 
-      - name: Apply patch
-        if: steps.check-changes.outputs.has_changes == 'true' && env.skip_port == 'false'
-        continue-on-error: true
-        id: apply-patch
-        run: |
-          # Try to apply the patch
-          if git apply --check aicore-changes.patch 2>/dev/null; then
-            git apply aicore-changes.patch
-            echo "patch_status=success" >> $GITHUB_OUTPUT
-            echo "✅ Patch applied successfully"
-
-            # Delete patch file after successful application
-            rm -f aicore-changes.patch
-          else
-            # Try with 3-way merge
-            if git apply --3way aicore-changes.patch 2>/dev/null; then
-              echo "patch_status=partial" >> $GITHUB_OUTPUT
-              echo "⚠️ Patch applied with conflicts"
-
-              # Save patch file for reference when there are conflicts
-              mkdir -p .github/port-patches
-              mv aicore-changes.patch .github/port-patches/
-            else
-              echo "patch_status=failed" >> $GITHUB_OUTPUT
-              echo "❌ Patch failed to apply"
-
-              # Save the patch file for manual application
-              mkdir -p .github/port-patches
-              mv aicore-changes.patch .github/port-patches/
-            fi
-          fi
-
-          # IMPORTANT: Always exclude .github/workflows/ changes to avoid permission issues
-          if [ -d ".github/workflows" ]; then
-            git checkout HEAD -- .github/workflows/ 2>/dev/null || true
-            echo "ℹ️ Excluded workflow changes (no workflows permission)"
-          fi
-
-      - name: Analyze patch results
+      - name: Save patch for Copilot Agent
         if: steps.check-changes.outputs.has_changes == 'true' && env.skip_port == 'false'
         run: |
-          echo "patch_status=${{ steps.apply-patch.outputs.patch_status }}" >> $GITHUB_ENV
+          # Save the patch file for Copilot Agent to process
+          mkdir -p .github/port-patches
+          mv aicore-changes.patch .github/port-patches/
 
-          # Get statistics from patch file (check both locations)
-          PATCH_FILE=""
-          if [ -f "aicore-changes.patch" ]; then
-            PATCH_FILE="aicore-changes.patch"
-          elif [ -f ".github/port-patches/aicore-changes.patch" ]; then
-            PATCH_FILE=".github/port-patches/aicore-changes.patch"
-          fi
+          echo "✅ Saved patch for Copilot Agent processing"
+          echo "patch_status=copilot" >> $GITHUB_ENV
 
-          if [ -n "$PATCH_FILE" ]; then
-            ADDED_LINES=$(grep "^+" "$PATCH_FILE" | grep -v "^+++" | wc -l | tr -d ' ')
-            REMOVED_LINES=$(grep "^-" "$PATCH_FILE" | grep -v "^---" | wc -l | tr -d ' ')
-            FILES_CHANGED=$(grep "^diff --git" "$PATCH_FILE" | wc -l | tr -d ' ')
-
-            echo "added_lines=$ADDED_LINES" >> $GITHUB_ENV
-            echo "removed_lines=$REMOVED_LINES" >> $GITHUB_ENV
-            echo "files_changed=$FILES_CHANGED" >> $GITHUB_ENV
-
-            echo "📊 Patch Statistics:"
-            echo "Files changed: $FILES_CHANGED"
-            echo "Lines added: $ADDED_LINES"
-            echo "Lines removed: $REMOVED_LINES"
-          fi
-
-      - name: Install Node.js
-        if: steps.check-changes.outputs.has_changes == 'true' && env.skip_port == 'false'
-        uses: actions/setup-node@v6
-        with:
-          node-version: 20
-
-      - name: Install corepack
-        if: steps.check-changes.outputs.has_changes == 'true' && env.skip_port == 'false'
-        run: corepack enable && corepack prepare yarn@4.10.3 --activate
-
-      - name: Get yarn cache directory path
-        if: steps.check-changes.outputs.has_changes == 'true' && env.skip_port == 'false'
-        id: yarn-cache-dir-path
-        run: echo "dir=$(yarn config get cacheFolder)" >> $GITHUB_OUTPUT
-
-      - name: Cache yarn dependencies
-        if: steps.check-changes.outputs.has_changes == 'true' && env.skip_port == 'false'
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ steps.yarn-cache-dir-path.outputs.dir }}
-            node_modules
-          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-yarn-
-
-      - name: Install Dependencies
-        if: steps.check-changes.outputs.has_changes == 'true' && env.skip_port == 'false'
-        run: yarn install
-
-      - name: Run linting and formatting
+      - name: Analyze patch
         if: steps.check-changes.outputs.has_changes == 'true' && env.skip_port == 'false'
         run: |
-          # Remove source-repo to avoid linting upstream code
-          rm -rf source-repo
+          # Get statistics from patch file
+          PATCH_FILE=".github/port-patches/aicore-changes.patch"
 
-          # Run format and lint on ported code only (ignore temporary files)
-          yarn format || true
-          yarn lint || true
+          ADDED_LINES=$(grep "^+" "$PATCH_FILE" | grep -v "^+++" | wc -l | tr -d ' ')
+          REMOVED_LINES=$(grep "^-" "$PATCH_FILE" | grep -v "^---" | wc -l | tr -d ' ')
+          FILES_CHANGED=$(grep "^diff --git" "$PATCH_FILE" | wc -l | tr -d ' ')
 
-          # Stage any formatting changes (exclude temporary files)
-          git add src/ || true
+          echo "added_lines=$ADDED_LINES" >> $GITHUB_ENV
+          echo "removed_lines=$REMOVED_LINES" >> $GITHUB_ENV
+          echo "files_changed=$FILES_CHANGED" >> $GITHUB_ENV
 
-          # Commit formatting changes if any
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: apply lint and format fixes" || true
-            echo "✅ Applied formatting fixes"
-          else
-            echo "ℹ️ No formatting changes needed"
-          fi
+          echo "📊 Patch Statistics:"
+          echo "Files changed: $FILES_CHANGED"
+          echo "Lines added: $ADDED_LINES"
+          echo "Lines removed: $REMOVED_LINES"
 
-      - name: Generate PR description
+      - name: Commit patch file
         if: steps.check-changes.outputs.has_changes == 'true' && env.skip_port == 'false'
         run: |
-          # Determine patch status emoji and message
-          if [ "${{ env.patch_status }}" == "success" ]; then
-            PATCH_EMOJI="✅"
-            PATCH_STATUS_MSG="Patch applied successfully"
-          elif [ "${{ env.patch_status }}" == "partial" ]; then
-            PATCH_EMOJI="⚠️"
-            PATCH_STATUS_MSG="Patch applied with conflicts (requires manual resolution)"
-          else
-            PATCH_EMOJI="❌"
-            PATCH_STATUS_MSG="Patch failed to apply (manual porting required)"
-          fi
+          # Commit the patch file to the branch
+          git add .github/port-patches/
+          git commit -m "chore: add upstream patch for Copilot Agent
 
-          cat > pr-body.md << EOF
-          ## 🤖 Automated Port from CherryHQ/cherry-studio
-
-          ${PATCH_EMOJI} **Status**: ${PATCH_STATUS_MSG}
-
-          This PR automatically ports upstream aiCore changes with path transformation:
-          \`src/renderer/src/aiCore\` → \`src/aiCore\`
-
-          ### 📊 Changes Summary
-
-          - **Files Changed**: ${{ env.files_changed }}
-          - **Lines Added**: +${{ env.added_lines }}
-          - **Lines Removed**: -${{ env.removed_lines }}
-          - **Total Commits**: ${{ steps.check-changes.outputs.commit_count }}
-          - **Source Commit**: [\`${{ steps.check-changes.outputs.latest_commit_short }}\`](https://github.com/CherryHQ/cherry-studio/commit/${{ steps.check-changes.outputs.latest_commit }})
-          - **Patch Status**: ${PATCH_STATUS_MSG}
-
-          ### 📝 Upstream Commits
-
-          EOF
-
-          # Parse and format commits
-          while IFS='|' read -r hash subject author email date; do
-            short_hash=$(echo "$hash" | cut -c1-7)
-            echo "- [\`$short_hash\`](https://github.com/CherryHQ/cherry-studio/commit/$hash) $subject - *$author* ($date)" >> pr-body.md
-          done < commits.txt
-
-          cat >> pr-body.md << 'EOF'
-
-          ### 🔧 What Was Done
-
-          1. ✅ Generated patch from upstream changes
-          2. ✅ Transformed paths for mobile structure (`src/renderer/src/aiCore` → `src/aiCore`)
-          3. ✅ Attempted automatic patch application
-          EOF
-
-          if [ "${{ env.patch_status }}" == "success" ]; then
-            cat >> pr-body.md << 'EOF'
-          4. ✅ All changes applied cleanly
-
-          ### ✅ Review Checklist
-
-          The patch was applied successfully! Please verify:
-          EOF
-          elif [ "${{ env.patch_status }}" == "partial" ]; then
-            cat >> pr-body.md << 'EOF'
-          4. ⚠️ Some conflicts need resolution
-
-          ### ⚠️ Conflicts Detected
-
-          The patch was applied with conflicts. Please check the code for conflict markers:
-          - Look for `<<<<<<<`, `=======`, and `>>>>>>>` in modified files
-          - Use `git status` to see which files have conflicts
-          - The original patch is saved at `.github/port-patches/aicore-changes.patch` for reference
-
-          ### ✅ Resolution Checklist
-          EOF
-          else
-            cat >> pr-body.md << 'EOF'
-          4. ❌ Automatic application failed
-
-          ### 📦 Manual Application Required
-
-          The patch is available at `.github/port-patches/aicore-changes.patch`
-
-          To apply manually:
-          ```bash
-          git apply .github/port-patches/aicore-changes.patch
-          # Or with 3-way merge:
-          git apply --3way .github/port-patches/aicore-changes.patch
-          ```
-
-          ### ✅ Manual Porting Checklist
-          EOF
-          fi
-
-          cat >> pr-body.md << 'EOF'
-
-          - [ ] Review all code changes for mobile compatibility
-          - [ ] Check for Node.js/Electron-specific APIs (fs, path, etc.)
-          - [ ] Verify imports work in React Native context
-          - [ ] Replace desktop APIs with Expo equivalents if needed
-          - [ ] Test provider functionality on iOS
-          - [ ] Test provider functionality on Android
-          - [ ] Verify streaming and SSE handling works on mobile
-          - [ ] Check error handling in mobile environment
-          - [ ] Run linting: `yarn lint`
-          - [ ] Run type checking: `yarn typecheck`
-          - [ ] Run tests: `yarn test`
-          - [ ] Test on physical devices (not just emulators)
-
-          ### ⚠️ Key Differences to Watch
-
-          | Desktop (Electron) | Mobile (React Native/Expo) |
-          |-------------------|---------------------------|
-          | `fs`, `path` modules | `expo-file-system` |
-          | Electron IPC | React Native Bridge |
-          | Synchronous file ops | Async-first with promises |
-          | Full file system access | Sandboxed directories |
-          | Node.js crypto | `expo-crypto` or `react-native-crypto` |
-
-          ### 🔗 Related Links
-
-          - [Source Repository](https://github.com/CherryHQ/cherry-studio)
-          - [Compare Changes](https://github.com/CherryHQ/cherry-studio/compare/${{ steps.last-port.outputs.last_commit }}...${{ steps.check-changes.outputs.latest_commit }})
-          - [Source aiCore Directory](https://github.com/CherryHQ/cherry-studio/tree/main/src/renderer/src/aiCore)
-          - [Expo FileSystem API](https://docs.expo.dev/versions/latest/sdk/filesystem/)
-
-          ---
-
-          *🤖 This PR was automatically created by Port Bot*
-          *📅 Generated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")*
-          EOF
-
-      - name: Commit changes
-        if: steps.check-changes.outputs.has_changes == 'true' && env.skip_port == 'false'
-        run: |
-          # IMPORTANT: Exclude workflow files and temporary files
-          git add . ':!.github/workflows' ':!pr-body.md' ':!commits.txt'
-
-          # Verify no workflow files are staged
-          if git diff --cached --name-only | grep -q "^.github/workflows/"; then
-            echo "❌ ERROR: Workflow files detected in staged changes"
-            git diff --cached --name-only | grep "^.github/workflows/"
-            exit 1
-          fi
-
-          # Verify no temporary files are staged
-          if git diff --cached --name-only | grep -qE "(pr-body\.md|commits\.txt)"; then
-            echo "❌ ERROR: Temporary files detected in staged changes"
-            git diff --cached --name-only | grep -E "(pr-body\.md|commits\.txt)"
-            exit 1
-          fi
-
-          # Generate commit message based on patch status
-          if [ "${{ env.patch_status }}" == "success" ]; then
-            COMMIT_MSG="port(aiCore): auto-apply changes from upstream @${{ steps.check-changes.outputs.latest_commit_short }}
-
-          ✅ Patch applied successfully
-          Files changed: ${{ env.files_changed }}
-          +${{ env.added_lines }} -${{ env.removed_lines }} lines
+          Patch contains ${{ env.files_changed }} files with +${{ env.added_lines }}/-${{ env.removed_lines }} lines.
 
           Source: CherryHQ/cherry-studio@${{ steps.check-changes.outputs.latest_commit }}"
-          elif [ "${{ env.patch_status }}" == "partial" ]; then
-            COMMIT_MSG="port(aiCore): partial apply from upstream @${{ steps.check-changes.outputs.latest_commit_short }}
 
-          ⚠️ Patch applied with conflicts - manual resolution required
-          Files changed: ${{ env.files_changed }}
-          +${{ env.added_lines }} -${{ env.removed_lines }} lines
-
-          Source: CherryHQ/cherry-studio@${{ steps.check-changes.outputs.latest_commit }}"
-          else
-            COMMIT_MSG="chore(aiCore): port reference from upstream @${{ steps.check-changes.outputs.latest_commit_short }}
-
-          ❌ Automatic patch failed - manual porting required
-          Patch available at: .github/port-patches/aicore-changes.patch
-
-          Source: CherryHQ/cherry-studio@${{ steps.check-changes.outputs.latest_commit }}"
-          fi
-
-          git commit -m "$COMMIT_MSG" || {
-            echo "No changes to commit"
-            echo "skip_port=true" >> $GITHUB_ENV
-          }
-
-      - name: Add state file and cleanup
-        if: steps.check-changes.outputs.has_changes == 'true' && env.skip_port == 'false'
-        run: |
-          # Clean up temporary files (keep pr-body.md for gh pr create)
-          rm -f commits.txt aicore-changes.patch
-
-          # Add state file to track this port
-          mkdir -p .github
-          echo "${{ steps.check-changes.outputs.latest_commit }}" > .github/port-bot-state
-
-          # IMPORTANT: Ensure workflow files are not modified
-          git checkout HEAD -- .github/workflows/ 2>/dev/null || true
-
-          # Add only specific files (exclude workflows and pr-body.md)
-          git add .github/port-bot-state
-          git add .github/port-patches/ 2>/dev/null || true
-
-          # Double check: remove workflow files from staging if somehow added
-          git reset HEAD .github/workflows/ 2>/dev/null || true
-
-          # Create a new commit for state file instead of amending
-          # (amend might re-include excluded files)
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: update port-bot state to ${{ steps.check-changes.outputs.latest_commit_short }}"
-            echo "✅ Added state file in separate commit"
-          else
-            echo "ℹ️ No state file changes to commit"
-          fi
-
-          echo "ℹ️ Keeping pr-body.md for create-pull-request action"
-
-      - name: Push changes
+      - name: Push branch
         if: steps.check-changes.outputs.has_changes == 'true' && env.skip_port == 'false'
         run: |
           git push origin ${{ env.branch_name }}
+          echo "✅ Pushed branch with patch file"
 
-      - name: Create Pull Request
+      - name: Create Copilot Agent task
         if: steps.check-changes.outputs.has_changes == 'true' && env.skip_port == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Determine if PR should be draft
-          if [ "${{ env.patch_status }}" == "success" ]; then
-            DRAFT_FLAG=""
-          else
-            DRAFT_FLAG="--draft"
-          fi
-
-          # Create PR using GitHub CLI
-          gh pr create \
-            --title "port(aiCore): upstream changes (${{ steps.check-changes.outputs.latest_commit_short }}) - ${{ env.patch_status }}" \
-            --body-file pr-body.md \
+          # Use GitHub Copilot Agent to apply the patch and handle conflicts
+          gh agent-task create \
             --base main \
-            --head "${{ env.branch_name }}" \
-            $DRAFT_FLAG
+            --repo ${{ github.repository }} \
+            "Help me solve the conflicts in .github/port-patches/aicore-changes.patch and port the changes to src/aiCore/.
 
-          echo "✅ Pull request created successfully"
+          **Context**: This is a React Native/Expo mobile app porting changes from a desktop Electron app.
 
-      - name: Summary
+          **Required transformations**:
+          1. Replace import paths: \`@renderer/**\` → \`@/**\`
+          2. Replace logger imports: \`@logger\` → \`@/services/LoggerService\`
+          3. Fix ESLint rule differences (this repo may have stricter rules)
+          4. Adapt Electron-specific code for React Native:
+             - Replace Node.js APIs (\`fs\`, \`path\`) with Expo equivalents
+             - Replace Electron IPC with React Native bridge patterns
+             - Ensure all file operations are async
+             - Use React Native compatible packages
+
+          **Steps**:
+          1. Apply the patch from \`.github/port-patches/aicore-changes.patch\` to \`src/aiCore/\`
+          2. Apply all the transformations listed above using bash/sed
+          3. Run \`yarn format\` and \`yarn lint\` to fix style issues
+          4. Ensure all imports resolve correctly
+          5. Create a PR with clear description of changes made
+
+          **Important**:
+          - Do not modify \`.github/workflows/\` directory
+          - Focus only on \`src/aiCore/\` directory
+          - Update \`.github/port-bot-state\` with: ${{ steps.check-changes.outputs.latest_commit }}"
+
+          echo "✅ Copilot Agent task created"
+          echo ""
+          echo "🤖 GitHub Copilot Agent will:"
+          echo "  1. Apply the patch and resolve conflicts"
+          echo "  2. Transform imports and adapt code for React Native"
+          echo "  3. Run lint and format"
+          echo "  4. Create a pull request automatically"
+          echo ""
+          echo "Monitor the agent task at: https://github.com/${{ github.repository }}/issues"
+
+
+      - name: Final Summary
         if: always()
         run: |
           echo "==================================="
@@ -493,25 +230,23 @@ jobs:
 
           if [ "${{ steps.check-changes.outputs.has_changes }}" == "true" ]; then
             if [ "${{ env.skip_port }}" == "true" ]; then
-              echo "⚠️ Changes detected but PR already exists or no changes to commit"
+              echo "⚠️ Changes detected but branch already exists"
             else
-              echo "✅ Successfully created port PR"
+              echo "✅ Copilot Agent task created successfully"
               echo ""
               echo "📊 Statistics:"
-              echo "  - Commits: ${{ steps.check-changes.outputs.commit_count }}"
-              echo "  - Files: ${{ env.files_changed }}"
+              echo "  - Upstream commits: ${{ steps.check-changes.outputs.commit_count }}"
+              echo "  - Files in patch: ${{ env.files_changed }}"
               echo "  - Lines: +${{ env.added_lines }} -${{ env.removed_lines }}"
               echo ""
-              echo "🔧 Patch Status: ${{ env.patch_status }}"
-
-              if [ "${{ env.patch_status }}" == "success" ]; then
-                echo "  ✅ All changes applied automatically"
-              elif [ "${{ env.patch_status }}" == "partial" ]; then
-                echo "  ⚠️ Applied with conflicts - needs manual resolution"
-              else
-                echo "  ❌ Failed to apply - manual porting required"
-                echo "  📦 Patch saved to: .github/port-patches/aicore-changes.patch"
-              fi
+              echo "🤖 Next Steps:"
+              echo "  - GitHub Copilot Agent will apply the patch"
+              echo "  - Transform imports and adapt code for React Native"
+              echo "  - Run lint and format automatically"
+              echo "  - Create a PR with detailed description"
+              echo ""
+              echo "📍 Monitor progress:"
+              echo "   https://github.com/${{ github.repository }}/pulls"
             fi
           else
             echo "ℹ️ No new changes found in src/renderer/src/aiCore"
