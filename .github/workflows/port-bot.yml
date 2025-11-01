@@ -184,6 +184,7 @@ jobs:
           gh agent-task create \
             --base main \
             --repo ${{ github.repository }} \
+            --follow \
             "Help me solve the conflicts in .github/port-patches/aicore-changes.patch and port the changes to src/aiCore/.
 
           **Context**: This is a React Native/Expo mobile app porting changes from a desktop Electron app.
